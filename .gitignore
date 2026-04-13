@@ -1,0 +1,26 @@
+# macOS
+.DS_Store
+*.swp
+*~
+
+# Build outputs
+*.tar.xz
+*.tar.gz
+*.zip
+build/
+Build/
+
+# Logs
+*.log
+
+# Temporary files
+tmp/
+temp/
+
+# Secrets
+*.pem
+*.key
+
+# IDE
+.vscode/
+.idea/

@@ -1,0 +1,187 @@
+name: Build Wine (Weekly)
+
+on:
+  schedule:
+    - cron: '0 2 * * 0'  # Weekly on Sunday at 2 AM UTC
+  workflow_dispatch:
+    inputs:
+      wine_version:
+        description: 'Wine Version'
+        required: false
+        default: '11.0'
+      force_rebuild:
+        description: 'Force rebuild even if cached'
+        required: false
+        default: 'false'
+
+jobs:
+  build-x86_64:
+    runs-on: macos-13
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: |
+          sudo xcode-select -switch /Applications/Xcode_15.app
+          xcodebuild -version
+
+      - name: Cache Homebrew
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/Library/Caches/Homebrew
+            /usr/local/Cellar
+          key: ${{ runner.os }}-brew-${{ hashFiles('scripts/install-deps.sh') }}
+          restore-keys: |
+            ${{ runner.os }}-brew-
+
+      - name: Install dependencies
+        run: |
+          brew install bison mingw-w64 pkg-config gstreamer gst-libav cmake ccache \
+            autoconf automake libtool flex ninja nasm fontconfig freetype zlib \
+            libpng libjpeg libtiff libxml2 libxslt openssl@3
+
+      - name: Clone GE-Proton
+        run: |
+          git clone --recurse-submodules --depth=1 \
+            --branch wine-${{ github.inputs.wine_version || '11.0' }} \
+            https://github.com/GloriousEggroll/proton-ge-custom.git \
+            /tmp/proton-ge
+
+      - name: Configure Wine
+        run: |
+          cd /tmp/proton-ge/wine
+          ./configure \
+            --build=x86_64-apple-darwin \
+            --enable-archs=i386,x86_64 \
+            --disable-tests \
+            --with-mingw \
+            --with-gstreamer \
+            --without-alsa \
+            --without-oss \
+            --without-pulse \
+            --without-wayland \
+            --without-x
+
+      - name: Build Wine x86_64
+        run: |
+          cd /tmp/proton-ge/wine
+          make -j$(sysctl -n hw.ncpu)
+
+      - name: Package x86_64
+        run: |
+          mkdir -p build-wine-x86_64
+          cp -r programs libraries server tools build-wine-x86_64/
+          cp -r /tmp/proton-ge/wine/wine build-wine-x86_64/
+          cp -r /tmp/proton-ge/wine/wineserver build-wine-x86_64/
+          
+          mkdir -p build-wine-x86_64/bin
+          ln -sf ../wine build-wine-x86_64/bin/wine
+          ln -sf ../wine build-wine-x86_64/bin/wine64
+          ln -sf ../wine build-wine-x86_64/bin/winecfg
+          ln -sf ../wine build-wine-x86_64/bin/wineboot
+          ln -sf ../wineserver build-wine-x86_64/bin/wineserver
+          ln -sf ../wine build-wine-x86_64/bin/msiexec
+          ln -sf ../wine build-wine-x86_64/bin/regedit
+          
+          tar -cvJf wine-proton-${{ github.inputs.wine_version || '11.0' }}-x86_64.tar.xz build-wine-x86_64/
+
+      - name: Upload x86_64 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: wine-x86_64
+          path: wine-proton-*.tar.xz
+          retention-days: 30
+
+  build-arm64:
+    runs-on: [self-hosted, macos, arm64]
+    if: false  # Enable when self-hosted ARM64 runner is available
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Clone GE-Proton
+        run: |
+          git clone --recurse-submodules --depth=1 \
+            --branch wine-${{ github.inputs.wine_version || '11.0' }} \
+            https://github.com/GloriousEggroll/proton-ge-custom.git \
+            /tmp/proton-ge
+
+      - name: Build Wine ARM64
+        run: |
+          cd /tmp/proton-ge/wine
+          ./configure \
+            --build=arm64-apple-darwin \
+            --disable-tests \
+            --with-mingw \
+            --with-gstreamer \
+            --without-alsa \
+            --without-oss \
+            --without-pulse \
+            --without-wayland \
+            --without-x
+          
+          make -j$(sysctl -n hw.ncpu)
+
+      - name: Package ARM64
+        run: |
+          mkdir -p build-wine-arm64
+          cp -r programs libraries server tools build-wine-arm64/
+          cp -r /tmp/proton-ge/wine/wine build-wine-arm64/
+          cp -r /tmp/proton-ge/wine/wineserver build-wine-arm64/
+          
+          mkdir -p build-wine-arm64/bin
+          ln -sf ../wine build-wine-arm64/bin/wine
+          ln -sf ../wineserver build-wine-arm64/bin/wineserver
+          
+          tar -cvJf wine-proton-${{ github.inputs.wine_version || '11.0' }}-arm64.tar.xz build-wine-arm64/
+
+      - name: Upload ARM64 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: wine-arm64
+          path: wine-proton-*-arm64.tar.xz
+          retention-days: 30
+
+  release:
+    needs: [build-x86_64]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule' || github.event.inputs.force_rebuild == 'true'
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: artifacts/**/*.tar.xz
+          tag: wine-proton-${{ github.inputs.wine_version || '11.0' }}-latest
+          name: Wine Proton ${{ github.inputs.wine_version || '11.0' }}
+          body: |
+            Automated build of Wine with Proton patches.
+            
+            ## What's Included
+            - Wine ${{ github.inputs.wine_version || '11.0' }} with Proton GE patches
+            - Built for macOS x86_64
+            - Apple Silicon support (ARM64) coming soon
+            
+            ## Installation
+            ```bash
+            # Download and extract
+            tar -xf wine-proton-*.tar.xz
+            
+            # Copy to Whisky
+            cp -r Wine ~/Library/Application\ Support/com.isaacmarovitz.Whisky/Libraries/
+            ```
+            
+            ## Game Porting Toolkit
+            This build does NOT include D3DMetal. To use Apple's Game Porting Toolkit:
+            1. Download from Apple Developer
+            2. Copy D3DMetal.framework manually
+            
+            Built with ❤️ by wine-macos-automated
+          draft: false
+          prerelease: false
