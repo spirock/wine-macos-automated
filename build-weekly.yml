@@ -1,0 +1,33 @@
+name: Build Wine Weekly
+
+on:
+  schedule:
+    - cron: '0 0 * * 0'   # Cada domingo a medianoche
+  workflow_dispatch:      # Permite ejecución manual
+
+jobs:
+  build-wine-macos:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          brew install mingw-w64
+          brew install flex bison
+
+      - name: Download Wine source
+        run: |
+          curl -L -o wine.tar.xz https://dl.winehq.org/wine/source/stable/wine-9.0.tar.xz
+          tar -xvf wine.tar.xz
+          cd wine-9.0
+          ./configure --prefix=$(pwd)/install
+          make -j$(sysctl -n hw.ncpu)
+          make install
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: wine-macos-build
+          path: wine-9.0/install
